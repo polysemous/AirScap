@@ -175,6 +175,7 @@ func (s *Scanner) StartScan(cfg vens.ScanConfig) (*vens.ScanSession, error) {
 	}
 	slog.Info("starting scan session", "colorMode", cfg.ColorMode, "quality", cfg.Quality, "duplex", cfg.Duplex, "paperSize", cfg.PaperSize)
 	dataCh := vens.NewDataChannel(s.host, s.dataPort, s.token)
+	dataCh.SetDeviceModel(s.MakeAndModel())
 	return dataCh.StartScan(cfg)
 }
 
@@ -185,6 +186,7 @@ func (s *Scanner) Scan(cfg vens.ScanConfig, onPage func(vens.Page)) ([]vens.Page
 	}
 	slog.Info("starting scan", "colorMode", cfg.ColorMode, "quality", cfg.Quality, "duplex", cfg.Duplex, "paperSize", cfg.PaperSize)
 	dataCh := vens.NewDataChannel(s.host, s.dataPort, s.token)
+	dataCh.SetDeviceModel(s.MakeAndModel())
 	pages, err := dataCh.RunScan(cfg, onPage)
 	if err != nil {
 		slog.Warn("scan error", "err", err, "pages_so_far", len(pages))

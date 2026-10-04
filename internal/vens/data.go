@@ -55,12 +55,17 @@ type DataChannel struct {
 	host  string
 	port  uint16
 	token [8]byte
+	model string
 }
 
 // NewDataChannel creates a DataChannel for the given scanner address.
 func NewDataChannel(host string, port uint16, token [8]byte) *DataChannel {
 	return &DataChannel{host: host, port: port, token: token}
 }
+
+// SetDeviceModel records the model obtained during authenticated device discovery.
+// Call before starting a scan; model-specific compatibility must not be guessed.
+func (d *DataChannel) SetDeviceModel(model string) { d.model = model }
 
 // connect opens a TCP connection and reads the welcome packet.
 func (d *DataChannel) connect() (net.Conn, error) {
@@ -342,11 +347,14 @@ func (s *ScanSession) NextPage() (Page, error) {
 			noPaper = !HasPaper(scanStatus)
 		}
 
+		// The iX500 feeder status does not establish that buffered images are drained.
+		drainBoundary := s.ix500Boundary(statusResp)
+
 		// Check for scanner error (multi-feed, etc.) at offset 44
 		if len(statusResp) >= StatusRespErrorOffset+4 {
 			errorField := binary.BigEndian.Uint32(statusResp[StatusRespErrorOffset : StatusRespErrorOffset+4])
-			if errorCode := uint16(errorField & 0xFFFF); errorCode != 0 {
-				if errorCode == ErrorCodeNoPaper && noPaper {
+			if errorCode := uint16(errorField & 0xFFFF); errorCode != 0 && !drainBoundary {
+				if errorCode == ErrorCodeNoPaper && noPaper && s.dc.model != ix500Model {
 					slog.Info("scan complete", "reason", "ADF empty")
 					s.done = true
 					return Page{}, io.EOF
@@ -371,9 +379,17 @@ func (s *ScanSession) NextPage() (Page, error) {
 			s.done = true
 			return Page{}, fmt.Errorf("wait next sheet recv: %w", err)
 		}
+		if s.dc.model == ix500Model && len(resp) < WaitRespStatusOffset+4 {
+			s.done = true
+			return Page{}, fmt.Errorf("short next-sheet WAIT response")
+		}
 		if len(resp) >= WaitRespStatusOffset+4 {
 			waitStatus := binary.BigEndian.Uint32(resp[WaitRespStatusOffset : WaitRespStatusOffset+4])
 			if waitStatus != 0 {
+				if s.dc.model == ix500Model {
+					s.done = true
+					return Page{}, s.ix500Completion(waitStatus)
+				}
 				slog.Info("scan complete", "waitStatus", waitStatus)
 				s.done = true
 				return Page{}, io.EOF
@@ -407,6 +423,11 @@ func (s *ScanSession) NextPage() (Page, error) {
 		slog.Warn("scanner error in sense data", "err", senseErr, "kind", senseErr.Kind)
 		s.done = true
 		return page, senseErr
+	}
+
+	if s.dc.model == ix500Model && !ix500PageAck(metaResp) {
+		s.done = true
+		return page, fmt.Errorf("invalid iX500 page acknowledgement")
 	}
 
 	// NOTE: READ_PIXELSIZE (SCSI READ DataType=0x80) is NOT sent here.
